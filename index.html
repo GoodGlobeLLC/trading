@@ -374,6 +374,134 @@
     font-family: var(--mono);
   }
 
+  /* ===== SEGMENTED CONTROL ===== */
+  .seg-control {
+    display: inline-flex;
+    gap: 0;
+    border: 1px solid var(--rule);
+    background: var(--bg-card);
+  }
+  .seg-btn {
+    background: transparent;
+    border: none;
+    color: var(--ink-dim);
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .seg-btn:hover { color: var(--ink); }
+  .seg-btn.active {
+    background: var(--amber);
+    color: var(--bg);
+    font-weight: 700;
+  }
+
+  /* ===== PROJECTION TABLE ===== */
+  .proj-table-wrap {
+    background: var(--bg-card);
+    border: 1px solid var(--rule);
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 480px;
+  }
+  .proj-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+    min-width: 700px;
+  }
+  .proj-table thead th {
+    background: var(--bg-elev);
+    color: var(--ink-dim);
+    font-weight: 500;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    text-align: right;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .proj-table thead th:first-child {
+    text-align: left;
+  }
+  .proj-table tbody td {
+    padding: 8px 14px;
+    text-align: right;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink);
+  }
+  .proj-table tbody td:first-child {
+    text-align: left;
+    color: var(--amber);
+    font-weight: 500;
+  }
+  .proj-table tbody tr:hover {
+    background: rgba(212, 162, 76, 0.04);
+  }
+  .proj-table tfoot td {
+    padding: 12px 14px;
+    text-align: right;
+    border-top: 2px solid var(--amber);
+    background: var(--bg-elev);
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .proj-table tfoot td:first-child {
+    text-align: left;
+    color: var(--amber);
+    font-style: italic;
+    font-family: var(--serif);
+    font-size: 14px;
+  }
+  .proj-bar-cell {
+    position: relative;
+    padding-right: 80px !important;
+  }
+  .proj-bar {
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    transform: translateY(-50%);
+    height: 4px;
+    background: var(--amber);
+    opacity: 0.6;
+    pointer-events: none;
+    width: 60px;
+  }
+  .proj-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-top: 12px;
+  }
+  .proj-summary > div {
+    background: var(--bg-card);
+    padding: 14px 16px;
+  }
+  .proj-summary .l {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--ink-dim);
+    margin-bottom: 4px;
+  }
+  .proj-summary .v {
+    font-family: var(--mono);
+    font-size: 16px;
+    color: var(--ink);
+  }
+
   /* ===== MONTE CARLO ===== */
   .mc-canvas-wrap {
     background: var(--bg-card);
@@ -602,6 +730,25 @@
   <div class="section">
     <div class="section-title">Valuation by Method <small>four lenses on the same business</small></div>
     <div class="methods" id="methods"></div>
+  </div>
+
+  <!-- PROJECTION SCHEDULE -->
+  <div class="section">
+    <div class="section-title">
+      Cash Flow Projections
+      <small>
+        <span class="seg-control" id="seg-granularity">
+          <button data-val="annual" class="seg-btn active">Annual</button>
+          <button data-val="quarterly" class="seg-btn">Quarterly</button>
+        </span>
+        &nbsp;
+        <span class="seg-control" id="seg-display">
+          <button data-val="nominal" class="seg-btn active">Nominal $</button>
+          <button data-val="real" class="seg-btn">Real $ (today's)</button>
+        </span>
+      </small>
+    </div>
+    <div id="projection-table-wrap"></div>
   </div>
 
   <!-- MONTE CARLO -->
