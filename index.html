@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VALUATIO — Intrinsic Value Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,600;9..144,800;9..144,900&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --bg-elev: #161513;
+    --bg-card: #1c1a17;
+    --ink: #e8dfc9;
+    --ink-dim: #8a8275;
+    --ink-faint: #4a463e;
+    --rule: #2a2722;
+    --amber: #d4a24c;
+    --amber-bright: #f0b656;
+    --green: #6b9b6f;
+    --red: #b56856;
+    --serif: 'Fraunces', Georgia, serif;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+    --sans: 'Inter', system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(ellipse at top, rgba(212, 162, 76, 0.04) 0%, transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(255,255,255,0.008) 2px, rgba(255,255,255,0.008) 3px);
+  }
+
+  /* ===== HEADER ===== */
+  .masthead {
+    border-bottom: 3px double var(--rule);
+    padding: 24px 32px 16px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 32px;
+  }
+  .masthead-title {
+    font-family: var(--serif);
+    font-weight: 900;
+    font-size: 48px;
+    letter-spacing: -0.04em;
+    line-height: 0.9;
+    color: var(--ink);
+  }
+  .masthead-title em {
+    font-style: italic;
+    font-weight: 300;
+    color: var(--amber);
+  }
+  .masthead-sub {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    color: var(--ink-dim);
+    margin-top: 6px;
+  }
+  .masthead-meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--ink-dim);
+    text-align: right;
+  }
+  .masthead-meta .live::before {
+    content: '●';
+    color: var(--amber);
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+
+  /* ===== TICKER BAR ===== */
+  .control-bar {
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--rule);
+    padding: 16px 32px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .ticker-input {
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-bottom: 2px solid var(--amber);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 10px 14px;
+    width: 160px;
+    letter-spacing: 0.1em;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .ticker-input:focus { border-bottom-color: var(--amber-bright); }
+  .ticker-input::placeholder { color: var(--ink-faint); }
+
+  .btn {
+    background: var(--amber);
+    color: var(--bg);
+    border: none;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    padding: 11px 20px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { background: var(--amber-bright); transform: translateY(-1px); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink-dim);
+    border: 1px solid var(--rule);
+  }
+  .btn-ghost:hover { color: var(--amber); border-color: var(--amber); background: transparent; }
+
+  .status {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin-left: auto;
+  }
+  .status.error { color: var(--red); }
+  .status.success { color: var(--green); }
+
+  /* ===== STOCK SUMMARY ===== */
+  .summary {
+    padding: 24px 32px;
+    border-bottom: 1px solid var(--rule);
+    display: none;
+  }
+  .summary.visible { display: block; }
+  .summary-header {
+    display: flex;
+    align-items: baseline;
+    gap: 24px;
+    margin-bottom: 8px;
+  }
+  .summary-name {
+    font-family: var(--serif);
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .summary-ticker {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--amber);
+    letter-spacing: 0.1em;
+  }
+  .summary-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 24px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+  }
+  .stat-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--ink-dim);
+    margin-bottom: 4px;
+  }
+  .stat-value {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+  .stat-value.pos { color: var(--green); }
+  .stat-value.neg { color: var(--red); }
+
+  /* ===== MAIN GRID ===== */
+  .workspace {
+    padding: 32px;
+    display: none;
+  }
+  .workspace.visible { display: block; }
+
+  .section {
+    margin-bottom: 40px;
+  }
+  .section-title {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 600;
+    font-style: italic;
+    color: var(--ink);
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 8px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .section-title small {
+    font-family: var(--mono);
+    font-size: 9px;
+    font-style: normal;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--ink-dim);
+    font-weight: 400;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+
+  .input-cell {
+    background: var(--bg-card);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .input-cell label {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--ink-dim);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .input-cell label .help {
+    color: var(--amber);
+    cursor: help;
+    font-style: normal;
+  }
+  .input-cell input, .input-cell select {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--ink-faint);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 16px;
+    padding: 4px 0;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .input-cell input:focus, .input-cell select:focus { border-bottom-color: var(--amber); }
+  .input-cell input.derived { color: var(--amber); }
+  .input-cell .unit {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+  }
+
+  /* ===== RESULTS ===== */
+  .verdict {
+    background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-elev) 100%);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--amber);
+    padding: 32px;
+    margin-bottom: 32px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+  .verdict-block .label {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.25em;
+    color: var(--ink-dim);
+    margin-bottom: 8px;
+  }
+  .verdict-block .value {
+    font-family: var(--serif);
+    font-size: 56px;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+  .verdict-block .sub {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin-top: 8px;
+  }
+  .verdict-block .sub.pos { color: var(--green); }
+  .verdict-block .sub.neg { color: var(--red); }
+
+  /* ===== METHOD CARDS ===== */
+  .methods {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .method-card {
+    background: var(--bg-card);
+    border: 1px solid var(--rule);
+    padding: 20px;
+    position: relative;
+  }
+  .method-card::before {
+    content: attr(data-num);
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    font-family: var(--serif);
+    font-size: 48px;
+    font-weight: 300;
+    color: var(--rule);
+    line-height: 1;
+  }
+  .method-card h3 {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .method-card .method-sub {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--ink-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    margin-bottom: 16px;
+  }
+  .method-card .method-value {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .method-card .method-delta {
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .method-card .method-detail {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--rule);
+    font-size: 11px;
+    color: var(--ink-dim);
+    line-height: 1.6;
+  }
+  .method-card .method-detail strong {
+    color: var(--ink);
+    font-family: var(--mono);
+  }
+
+  /* ===== MONTE CARLO ===== */
+  .mc-canvas-wrap {
+    background: var(--bg-card);
+    border: 1px solid var(--rule);
+    padding: 20px;
+  }
+  #mc-canvas {
+    width: 100%;
+    height: 280px;
+    display: block;
+  }
+  .mc-stats {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+    background: var(--rule);
+    margin-top: 16px;
+    border: 1px solid var(--rule);
+  }
+  .mc-stat {
+    background: var(--bg-card);
+    padding: 12px;
+    text-align: center;
+  }
+  .mc-stat .l {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--ink-dim);
+  }
+  .mc-stat .v {
+    font-family: var(--mono);
+    font-size: 16px;
+    color: var(--amber);
+    margin-top: 4px;
+  }
+
+  /* ===== SAVED VALUATIONS ===== */
+  .saved-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .saved-item {
+    background: var(--bg-card);
+    border: 1px solid var(--rule);
+    padding: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .saved-item:hover { border-color: var(--amber); }
+  .saved-item .s-tic {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--amber);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+  }
+  .saved-item .s-name {
+    font-family: var(--serif);
+    font-size: 13px;
+    margin: 4px 0;
+    color: var(--ink-dim);
+  }
+  .saved-item .s-val {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .saved-item .s-date {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 6px;
+  }
+  .saved-item .s-del {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: none;
+    border: none;
+    color: var(--ink-faint);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+  }
+  .saved-item .s-del:hover { color: var(--red); }
+
+  .empty {
+    color: var(--ink-faint);
+    font-style: italic;
+    padding: 20px;
+    text-align: center;
+    font-family: var(--serif);
+  }
+
+  /* ===== TOOLTIP ===== */
+  [data-tip] { position: relative; }
+  [data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg);
+    border: 1px solid var(--amber);
+    color: var(--ink);
+    padding: 8px 12px;
+    font-family: var(--sans);
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: normal;
+    white-space: normal;
+    width: 240px;
+    z-index: 100;
+    margin-bottom: 6px;
+    line-height: 1.4;
+  }
+
+  /* ===== INTRO STATE ===== */
+  .intro {
+    text-align: center;
+    padding: 80px 32px;
+  }
+  .intro h2 {
+    font-family: var(--serif);
+    font-size: 36px;
+    font-style: italic;
+    font-weight: 400;
+    color: var(--ink-dim);
+    max-width: 700px;
+    margin: 0 auto 16px;
+    line-height: 1.3;
+  }
+  .intro p {
+    color: var(--ink-faint);
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+  }
+  .intro .quote {
+    margin-top: 40px;
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink-faint);
+    max-width: 500px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  @media (max-width: 768px) {
+    .masthead { flex-direction: column; align-items: flex-start; padding: 16px 20px; }
+    .masthead-title { font-size: 32px; }
+    .control-bar { padding: 12px 20px; }
+    .workspace { padding: 16px; }
+    .verdict { grid-template-columns: 1fr; padding: 20px; }
+    .verdict-block .value { font-size: 40px; }
+    .mc-stats { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div>
+    <div class="masthead-title">Valuat<em>io</em></div>
+    <div class="masthead-sub">Intrinsic Value Engine · DCF · CAPM · Multiples · Monte Carlo</div>
+  </div>
+  <div class="masthead-meta">
+    <div class="live">Yahoo Finance</div>
+    <div id="clock" style="margin-top:4px"></div>
+  </div>
+</header>
+
+<div class="control-bar">
+  <input type="text" class="ticker-input" id="ticker" placeholder="AAPL" maxlength="10">
+  <button class="btn" id="fetch-btn">Fetch & Value</button>
+  <button class="btn btn-ghost" id="save-btn" disabled>Save Valuation</button>
+  <div class="status" id="status">Ready</div>
+</div>
+
+<section class="summary" id="summary">
+  <div class="summary-header">
+    <div class="summary-name" id="s-name">—</div>
+    <div class="summary-ticker" id="s-tic">—</div>
+  </div>
+  <div class="summary-stats">
+    <div><div class="stat-label">Price</div><div class="stat-value" id="s-price">—</div></div>
+    <div><div class="stat-label">Market Cap</div><div class="stat-value" id="s-mcap">—</div></div>
+    <div><div class="stat-label">P/E (TTM)</div><div class="stat-value" id="s-pe">—</div></div>
+    <div><div class="stat-label">Beta</div><div class="stat-value" id="s-beta">—</div></div>
+    <div><div class="stat-label">EPS (TTM)</div><div class="stat-value" id="s-eps">—</div></div>
+    <div><div class="stat-label">Sector</div><div class="stat-value" id="s-sector" style="font-size:13px">—</div></div>
+  </div>
+</section>
+
+<main class="workspace" id="workspace">
+
+  <!-- VERDICT -->
+  <div class="verdict" id="verdict">
+    <div class="verdict-block">
+      <div class="label">Estimated Intrinsic Value</div>
+      <div class="value" id="v-fair">$—</div>
+      <div class="sub" id="v-fair-sub">Blended estimate from all methods</div>
+    </div>
+    <div class="verdict-block">
+      <div class="label">Margin of Safety</div>
+      <div class="value" id="v-mos">—</div>
+      <div class="sub" id="v-mos-sub">vs. current market price</div>
+    </div>
+  </div>
+
+  <!-- INPUTS -->
+  <div class="section">
+    <div class="section-title">Assumptions <small>edit any value · models recompute live</small></div>
+    <div class="grid" id="inputs"></div>
+  </div>
+
+  <!-- METHOD RESULTS -->
+  <div class="section">
+    <div class="section-title">Valuation by Method <small>four lenses on the same business</small></div>
+    <div class="methods" id="methods"></div>
+  </div>
+
+  <!-- MONTE CARLO -->
+  <div class="section">
+    <div class="section-title">Monte Carlo Distribution <small>10,000 simulations · uncertainty bands</small></div>
+    <div class="mc-canvas-wrap">
+      <canvas id="mc-canvas" width="1200" height="280"></canvas>
+      <div class="mc-stats" id="mc-stats"></div>
+    </div>
+  </div>
+
+  <!-- SAVED -->
+  <div class="section">
+    <div class="section-title">Saved Valuations <small>stored locally in your browser</small></div>
+    <div class="saved-list" id="saved-list"></div>
+  </div>
+
+</main>
+
+<div class="intro" id="intro">
+  <h2>Three lenses, one business. Estimate the intrinsic worth of a company before the market tells you what to think.</h2>
+  <p>Enter a ticker above to begin</p>
+  <div class="quote">"The numbers are always going to be wrong because you're valuing the future."<br>— from your notes</div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
