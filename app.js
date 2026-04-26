@@ -43,136 +43,206 @@ tickClock();
 setInterval(tickClock, 30000);
 
 // ---------- DATA FETCHING ----------
-// Yahoo Finance via a CORS-friendly proxy. No API key needed.
-// We use query1.finance.yahoo.com via a public CORS proxy.
+// Strategy in 2026: Yahoo Finance's unofficial API now requires a session crumb
+// that can't be obtained from the browser. CORS proxies are unreliable.
+// We use Alpha Vantage (free, real CORS support, requires a free API key)
+// with Stooq as a price-only fallback for users who haven't set up a key yet.
+//
+// Get a free Alpha Vantage key at https://www.alphavantage.co/support/#api-key
+// Save it once via the "Set API Key" button in the app. It lives in localStorage.
+
+const AV_KEY_STORAGE = 'valuatio.alphavantage.key';
+
+function getApiKey() {
+  return localStorage.getItem(AV_KEY_STORAGE) || '';
+}
+function setApiKey(k) {
+  if (k) localStorage.setItem(AV_KEY_STORAGE, k.trim());
+  else localStorage.removeItem(AV_KEY_STORAGE);
+}
+
 async function fetchStock(ticker) {
   ticker = ticker.toUpperCase().trim();
   if (!ticker) throw new Error('No ticker');
 
-  const setStatus = (m, c='') => {
-    const s = document.getElementById('status');
-    s.textContent = m;
-    s.className = 'status ' + c;
-  };
+  const key = getApiKey();
 
-  setStatus('Fetching ' + ticker + '…');
-
-  // Use a free Yahoo Finance API proxy. We try multiple endpoints for resilience.
-  // The "quoteSummary" endpoint gives us almost everything we need in one call.
-  const modules = [
-    'price','summaryDetail','defaultKeyStatistics','financialData',
-    'incomeStatementHistory','cashflowStatementHistory','balanceSheetHistory',
-    'assetProfile','earningsTrend'
-  ].join(',');
-
-  // Public CORS proxies that mirror Yahoo Finance:
-  const urls = [
-    `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=${modules}`,
-    `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=${modules}`,
-  ];
-
-  // We'll route through a free CORS proxy because Yahoo blocks browser CORS.
-  // Using corsproxy.io which is free and reliable for this purpose.
-  let data = null;
-  let lastErr = null;
-  for (const url of urls) {
-    try {
-      const proxied = 'https://corsproxy.io/?' + encodeURIComponent(url);
-      const r = await fetch(proxied);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      if (j.quoteSummary && j.quoteSummary.result && j.quoteSummary.result[0]) {
-        data = j.quoteSummary.result[0];
-        break;
-      }
-      if (j.quoteSummary && j.quoteSummary.error) {
-        throw new Error(j.quoteSummary.error.description || 'Ticker not found');
-      }
-    } catch (e) { lastErr = e; }
+  // Run all available sources in parallel for resilience
+  const tasks = [fetchStooqPrice(ticker)];
+  if (key) {
+    tasks.push(fetchAlphaVantageOverview(ticker, key));
+    tasks.push(fetchAlphaVantageIncomeStatement(ticker, key));
+    tasks.push(fetchAlphaVantageCashFlow(ticker, key));
+    tasks.push(fetchAlphaVantageBalanceSheet(ticker, key));
   }
 
-  if (!data) throw new Error('Could not fetch data: ' + (lastErr?.message || 'unknown'));
-  return data;
+  const results = await Promise.allSettled(tasks);
+  const [stooqRes, overviewRes, incomeRes, cashRes, balanceRes] = results;
+
+  const envelope = {
+    ticker,
+    stooq: stooqRes?.status === 'fulfilled' ? stooqRes.value : null,
+    overview: overviewRes?.status === 'fulfilled' ? overviewRes.value : null,
+    income: incomeRes?.status === 'fulfilled' ? incomeRes.value : null,
+    cash: cashRes?.status === 'fulfilled' ? cashRes.value : null,
+    balance: balanceRes?.status === 'fulfilled' ? balanceRes.value : null,
+    hasKey: !!key,
+  };
+
+  // We need at LEAST one signal of life
+  if (!envelope.stooq && !envelope.overview) {
+    if (!key) throw new Error('No API key set. Click "Set API Key" or enter values manually.');
+    throw new Error('All data sources failed. Check your API key or enter values manually.');
+  }
+
+  return envelope;
 }
 
-// Pull a numeric value out of Yahoo's nested {raw, fmt} structure
-const num = (obj) => {
-  if (obj == null) return null;
-  if (typeof obj === 'number') return obj;
-  if (typeof obj.raw === 'number') return obj.raw;
-  return null;
+// ----- Stooq: free, CORS-enabled, returns CSV with the latest quote -----
+async function fetchStooqPrice(ticker) {
+  const stooqTicker = ticker.toLowerCase().replace('-', '.') + '.us';
+  const url = `https://stooq.com/q/l/?s=${stooqTicker}&f=sd2t2ohlcv&h&e=csv`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('Stooq HTTP ' + r.status);
+  const text = await r.text();
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) throw new Error('Stooq: no data');
+  const cols = lines[1].split(',');
+  if (cols[3] === 'N/D' || !cols[6]) throw new Error('Stooq: ticker not found');
+  return {
+    symbol: cols[0],
+    open: parseFloat(cols[3]),
+    high: parseFloat(cols[4]),
+    low: parseFloat(cols[5]),
+    close: parseFloat(cols[6]),
+    volume: parseInt(cols[7]) || 0,
+  };
+}
+
+// ----- Alpha Vantage: free tier, real CORS support, requires API key -----
+async function fetchAlphaVantage(fn, ticker, key) {
+  const url = `https://www.alphavantage.co/query?function=${fn}&symbol=${ticker}&apikey=${key}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`AV HTTP ${r.status}`);
+  const j = await r.json();
+  // Rate-limit / error responses come back as 200 OK with a "Note" or "Information" key
+  if (j.Note || j.Information) throw new Error('AV rate limit (free tier: 25/day)');
+  if (j['Error Message']) throw new Error('AV: ' + j['Error Message']);
+  if (!Object.keys(j).length) throw new Error('AV: empty response');
+  return j;
+}
+
+const fetchAlphaVantageOverview = (t, k) => fetchAlphaVantage('OVERVIEW', t, k);
+const fetchAlphaVantageIncomeStatement = (t, k) => fetchAlphaVantage('INCOME_STATEMENT', t, k);
+const fetchAlphaVantageCashFlow = (t, k) => fetchAlphaVantage('CASH_FLOW', t, k);
+const fetchAlphaVantageBalanceSheet = (t, k) => fetchAlphaVantage('BALANCE_SHEET', t, k);
+
+// Pull a numeric value out of Alpha Vantage's stringified-everything responses
+const avNum = (v) => {
+  if (v == null || v === 'None' || v === '-' || v === '') return null;
+  const n = parseFloat(v);
+  return isFinite(n) ? n : null;
 };
 
 // ---------- NORMALIZE FETCHED DATA ----------
-function normalizeStock(raw) {
-  const price = raw.price || {};
-  const detail = raw.summaryDetail || {};
-  const kstats = raw.defaultKeyStatistics || {};
-  const fin = raw.financialData || {};
-  const profile = raw.assetProfile || {};
-  const incomeHist = raw.incomeStatementHistory?.incomeStatementHistory || [];
-  const cashHist = raw.cashflowStatementHistory?.cashflowStatements || [];
-  const balanceHist = raw.balanceSheetHistory?.balanceSheetStatements || [];
+function normalizeStock(envelope) {
+  const ov = envelope.overview || {};       // Alpha Vantage company overview
+  const incomeRpts = envelope.income?.annualReports || [];
+  const cashRpts = envelope.cash?.annualReports || [];
+  const balanceRpts = envelope.balance?.annualReports || [];
+  const stooq = envelope.stooq || null;
+  const ticker = envelope.ticker;
 
-  // Latest financials
-  const inc = incomeHist[0] || {};
-  const cf = cashHist[0] || {};
-  const bs = balanceHist[0] || {};
+  // Latest annual reports (Alpha Vantage gives last 5 years)
+  const inc = incomeRpts[0] || {};
+  const inc1 = incomeRpts[1] || {};
+  const cf = cashRpts[0] || {};
+  const bs = balanceRpts[0] || {};
 
-  // Historical revenue growth
+  // Historical revenue growth (year-over-year)
   let histRevGrowth = null;
-  if (incomeHist.length >= 2) {
-    const r0 = num(incomeHist[0].totalRevenue);
-    const r1 = num(incomeHist[1].totalRevenue);
-    if (r0 && r1 && r1 > 0) histRevGrowth = (r0 / r1) - 1;
-  }
+  const r0 = avNum(inc.totalRevenue);
+  const r1 = avNum(inc1.totalRevenue);
+  if (r0 && r1 && r1 > 0) histRevGrowth = (r0 / r1) - 1;
 
-  // Country: Yahoo gives a country in profile
-  let country = profile.country || 'United States';
+  // Free Cash Flow = Operating Cash Flow - CapEx
+  const ocf = avNum(cf.operatingCashflow);
+  const capex = Math.abs(avNum(cf.capitalExpenditures) || 0);
+  const fcf = ocf != null ? ocf - capex : null;
+
+  // EBITDA = Operating Income + Depreciation & Amortization
+  const opInc = avNum(inc.operatingIncome);
+  const da = avNum(inc.depreciationAndAmortization) || avNum(cf.depreciationDepletionAndAmortization) || 0;
+  const ebitda = avNum(ov.EBITDA) || (opInc != null ? opInc + da : null);
+
+  // Total debt = short-term + long-term
+  const stDebt = avNum(bs.shortTermDebt) || 0;
+  const ltDebt = avNum(bs.longTermDebt) || 0;
+  const totalDebt = avNum(bs.shortLongTermDebtTotal) || (stDebt + ltDebt);
+
+  // Cash & equivalents
+  const cash = avNum(bs.cashAndCashEquivalentsAtCarryingValue) || avNum(bs.cashAndShortTermInvestments) || 0;
+
+  // Live price: prefer Stooq (real-time), fall back to AV's analyst target as proxy
+  const livePrice = stooq?.close
+                 || avNum(ov.AnalystTargetPrice)
+                 || null;
+
+  // Country: AV gives Country in overview
+  const country = ov.Country === 'USA' ? 'United States' : (ov.Country || 'United States');
+
+  // Build a friendly data-source description for the UI
+  let dataSource;
+  if (envelope.overview && envelope.stooq) dataSource = 'Alpha Vantage + Stooq';
+  else if (envelope.overview) dataSource = 'Alpha Vantage';
+  else if (envelope.stooq) dataSource = 'Stooq (price only — fill in financials manually)';
+  else dataSource = 'Manual entry';
 
   return {
-    ticker: price.symbol,
-    name: price.longName || price.shortName || price.symbol,
-    sector: profile.sector || '—',
-    industry: profile.industry || '—',
+    ticker: ov.Symbol || ticker,
+    name: ov.Name || ticker,
+    sector: ov.Sector || '—',
+    industry: ov.Industry || '—',
     country,
-    currency: price.currency || 'USD',
+    currency: ov.Currency || 'USD',
+    dataSource,
     // Market data
-    price: num(price.regularMarketPrice) || num(detail.previousClose),
-    marketCap: num(price.marketCap),
-    sharesOutstanding: num(kstats.sharesOutstanding) || num(price.sharesOutstanding),
-    beta: num(detail.beta) || num(kstats.beta) || DEFAULTS.defaultBeta,
-    pe: num(detail.trailingPE),
-    forwardPE: num(detail.forwardPE),
-    eps: num(kstats.trailingEps),
+    price: livePrice,
+    marketCap: avNum(ov.MarketCapitalization),
+    sharesOutstanding: avNum(ov.SharesOutstanding),
+    beta: avNum(ov.Beta) || DEFAULTS.defaultBeta,
+    pe: avNum(ov.PERatio),
+    forwardPE: avNum(ov.ForwardPE),
+    eps: avNum(ov.EPS),
     // Financials
-    revenue: num(fin.totalRevenue) || num(inc.totalRevenue),
-    ebitda: num(fin.ebitda),
-    operatingIncome: num(inc.operatingIncome),
-    netIncome: num(inc.netIncome),
-    capex: Math.abs(num(cf.capitalExpenditures) || 0),
-    depreciation: num(cf.depreciation) || 0,
-    operatingCashFlow: num(fin.operatingCashflow) || num(cf.totalCashFromOperatingActivities),
-    freeCashFlow: num(fin.freeCashflow),
-    totalDebt: num(fin.totalDebt) || (num(bs.shortLongTermDebt) || 0) + (num(bs.longTermDebt) || 0),
-    cash: num(fin.totalCash) || num(bs.cash) || 0,
-    totalEquity: num(bs.totalStockholderEquity),
+    revenue: avNum(inc.totalRevenue) || avNum(ov.RevenueTTM),
+    ebitda,
+    operatingIncome: opInc,
+    netIncome: avNum(inc.netIncome),
+    capex,
+    depreciation: da,
+    operatingCashFlow: ocf,
+    freeCashFlow: fcf,
+    totalDebt,
+    cash,
+    totalEquity: avNum(bs.totalShareholderEquity),
     // Growth
-    revenueGrowth: num(fin.revenueGrowth) || histRevGrowth,
-    earningsGrowth: num(fin.earningsGrowth),
+    revenueGrowth: avNum(ov.QuarterlyRevenueGrowthYOY) || histRevGrowth,
+    earningsGrowth: avNum(ov.QuarterlyEarningsGrowthYOY),
     // Margins
-    grossMargin: num(fin.grossMargins),
-    operatingMargin: num(fin.operatingMargins),
-    profitMargin: num(fin.profitMargins),
-    returnOnEquity: num(fin.returnOnEquity),
-    returnOnAssets: num(fin.returnOnAssets),
+    grossMargin: avNum(ov.GrossProfitTTM) && avNum(ov.RevenueTTM)
+      ? avNum(ov.GrossProfitTTM) / avNum(ov.RevenueTTM) : null,
+    operatingMargin: avNum(ov.OperatingMarginTTM),
+    profitMargin: avNum(ov.ProfitMargin),
+    returnOnEquity: avNum(ov.ReturnOnEquityTTM),
+    returnOnAssets: avNum(ov.ReturnOnAssetsTTM),
     // Multiples for relative
-    priceToBook: num(detail.priceToBook),
-    enterpriseValue: num(kstats.enterpriseValue),
-    evToRevenue: num(kstats.enterpriseToRevenue),
-    evToEbitda: num(kstats.enterpriseToEbitda),
+    priceToBook: avNum(ov.PriceToBookRatio),
+    enterpriseValue: avNum(ov.MarketCapitalization) ? avNum(ov.MarketCapitalization) + totalDebt - cash : null,
+    evToRevenue: avNum(ov.EVToRevenue),
+    evToEbitda: avNum(ov.EVToEBITDA),
     // For dividend approach
-    dividendYield: num(detail.dividendYield) || 0,
+    dividendYield: avNum(ov.DividendYield) || 0,
   };
 }
 
@@ -863,14 +933,57 @@ async function loadValuation() {
     document.getElementById('intro').style.display = 'none';
     document.getElementById('workspace').classList.add('visible');
     document.getElementById('save-btn').disabled = false;
-    flashStatus('Loaded ' + stock.ticker, 'success');
+    if (raw.overview) {
+      flashStatus('Loaded ' + stock.ticker + ' · ' + stock.dataSource, 'success');
+    } else {
+      flashStatus(stock.ticker + ' · ' + stock.dataSource, '');
+    }
   } catch (e) {
-    flashStatus(e.message || 'Failed to load', 'error');
+    // Total fetch failure — still open the workspace in manual-entry mode
     console.error(e);
+    flashStatus(e.message + ' — manual mode', 'error');
+    openManualMode(ticker);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Fetch & Value';
   }
+}
+
+// Allow the user to value a ticker even when ALL data sources fail.
+// Provides a blank-but-sensible scaffold; user fills in the numbers from 10-K / 10-Q.
+function openManualMode(ticker) {
+  const stub = {
+    ticker,
+    name: ticker + ' (manual entry)',
+    sector: '—',
+    industry: '—',
+    country: 'United States',
+    currency: 'USD',
+    dataSource: 'Manual entry',
+    price: null,
+    marketCap: null,
+    sharesOutstanding: null,
+    beta: 1.0,
+    pe: null, forwardPE: null, eps: 0,
+    revenue: 0, ebitda: 0,
+    operatingIncome: 0, netIncome: 0,
+    capex: 0, depreciation: 0,
+    operatingCashFlow: 0, freeCashFlow: 0,
+    totalDebt: 0, cash: 0, totalEquity: 0,
+    revenueGrowth: 0.05, earningsGrowth: 0.05,
+    grossMargin: 0.30, operatingMargin: 0.15, profitMargin: 0.10,
+    returnOnEquity: 0.12, returnOnAssets: 0.06,
+    priceToBook: null, enterpriseValue: null,
+    evToRevenue: null, evToEbitda: null,
+    dividendYield: 0,
+  };
+  state.stock = stub;
+  renderSummary(stub);
+  buildInputs(stub);
+  recalculate();
+  document.getElementById('intro').style.display = 'none';
+  document.getElementById('workspace').classList.add('visible');
+  document.getElementById('save-btn').disabled = false;
 }
 
 document.getElementById('fetch-btn').addEventListener('click', loadValuation);
@@ -878,6 +991,30 @@ document.getElementById('ticker').addEventListener('keydown', e => {
   if (e.key === 'Enter') loadValuation();
 });
 document.getElementById('save-btn').addEventListener('click', saveCurrent);
+
+// API Key management
+document.getElementById('key-btn').addEventListener('click', () => {
+  const current = getApiKey();
+  const msg = current
+    ? `Current key: ${current.slice(0,4)}…${current.slice(-2)}\n\nEnter a new key, or leave blank to keep, or type "remove" to delete.\n\nGet a free key at:\nhttps://www.alphavantage.co/support/#api-key`
+    : `Paste your free Alpha Vantage API key.\n\nGet one (30 sec, no credit card) at:\nhttps://www.alphavantage.co/support/#api-key`;
+  const input = prompt(msg, '');
+  if (input === null) return;
+  if (input.trim().toLowerCase() === 'remove') {
+    setApiKey('');
+    flashStatus('Key removed', 'success');
+  } else if (input.trim()) {
+    setApiKey(input);
+    flashStatus('Key saved', 'success');
+  }
+});
+
+// Show a hint on the key button if no key is set
+if (!getApiKey()) {
+  const kb = document.getElementById('key-btn');
+  kb.style.borderColor = 'var(--amber)';
+  kb.style.color = 'var(--amber)';
+}
 
 // Initial render of saved list
 renderSaved();
