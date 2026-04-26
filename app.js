@@ -14,12 +14,15 @@ const state = {
 
 // ---------- CONSTANTS (defaults from Damodaran's framework) ----------
 const DEFAULTS = {
-  riskFreeRate: 0.045,        // ~10Y Treasury, can be overridden
+  riskFreeRate: 0.045,        // ~10Y Treasury (nominal), can be overridden
+  expectedInflation: 0.025,   // long-run US CPI expectation
   matureERP: 0.055,           // mature market equity risk premium
   marginalTaxRate: 0.21,      // US corporate
   terminalGrowth: 0.025,      // ≤ risk-free rate per Damodaran
-  highGrowthYears: 5,
+  highGrowthYears: 10,        // projection horizon (was 5; longer = more visible detail)
   defaultBeta: 1.0,
+  granularity: 'annual',      // 'annual' or 'quarterly'
+  displayMode: 'nominal',     // 'nominal' (future $) or 'real' (today's $)
 };
 
 // Country Risk Premium table (additive to mature ERP)
@@ -272,10 +275,13 @@ function buildInputs(stock) {
     operatingMargin: (stock.operatingMargin ?? 0.15) * 100, // as %
     taxRate: DEFAULTS.marginalTaxRate * 100,
 
-    // === DCF: GROWTH ===
+    // === DCF: GROWTH & HORIZON ===
     growthRate: clamp((stock.revenueGrowth ?? stock.earningsGrowth ?? 0.08) * 100, -10, 40),
     growthYears: DEFAULTS.highGrowthYears,
     terminalGrowth: DEFAULTS.terminalGrowth * 100,
+
+    // === INFLATION (separates real from nominal) ===
+    expectedInflation: DEFAULTS.expectedInflation * 100,
 
     // === COST OF EQUITY (CAPM) ===
     riskFreeRate: DEFAULTS.riskFreeRate * 100,
@@ -303,6 +309,10 @@ function buildInputs(stock) {
     growthVol: 3,        // ± percentage points
     marginVol: 2,        // ± percentage points
     discountVol: 1.5,    // ± percentage points
+
+    // === DISPLAY OPTIONS (toggles, not numeric) ===
+    granularity: state.inputs.granularity || DEFAULTS.granularity,
+    displayMode: state.inputs.displayMode || DEFAULTS.displayMode,
   };
 
   renderInputs();
@@ -316,10 +326,11 @@ const INPUT_GROUPS = [
   ['currentPrice', 'Current Price', '$', 'Latest market price per share'],
   ['sharesOutstanding', 'Shares Outstanding', '#', 'Diluted shares — used to convert enterprise value to per-share value'],
   ['fcf', 'Free Cash Flow (TTM)', '$', 'Trailing twelve-month free cash flow. The cash the business actually generates after reinvestment.'],
-  ['growthRate', 'Growth Rate (Year 1)', '%', 'Expected near-term growth in cash flows. Damodaran: anchor to history but check feasibility at scale.'],
-  ['growthYears', 'High-Growth Period', 'yrs', 'Years until the company reaches stable growth. Larger firms reach stability faster.'],
-  ['terminalGrowth', 'Terminal Growth', '%', 'Perpetual growth after high-growth phase. CANNOT exceed risk-free rate (≈ economy growth).'],
-  ['riskFreeRate', 'Risk-Free Rate', '%', '10-year US Treasury yield. The starting point for cost of equity (CAPM).'],
+  ['growthRate', 'Growth Rate (Year 1)', '%', 'NOMINAL expected near-term growth (includes inflation). Damodaran: anchor to history but check feasibility at scale.'],
+  ['growthYears', 'Projection Horizon', 'yrs', 'Years until the company reaches stable growth. 5–10 typical, 15–20 for high-growth firms with durable advantages. Cash flows fade linearly to terminal growth.'],
+  ['terminalGrowth', 'Terminal Growth (nominal)', '%', 'Perpetual nominal growth after high-growth phase. CANNOT exceed the risk-free rate (the proxy for long-run nominal economic growth).'],
+  ['expectedInflation', 'Expected Inflation', '%', 'Long-run inflation expectation. Used to convert between nominal (future $) and real (today\'s purchasing power) projections. The model is internally consistent: nominal cash flows + nominal discount rate.'],
+  ['riskFreeRate', 'Risk-Free Rate (nominal)', '%', '10-year US Treasury yield — already includes inflation. Real Rf ≈ Nominal Rf − Inflation. The starting point for cost of equity (CAPM).'],
   ['beta', 'Beta', 'β', 'Sensitivity to market movements. >1 = more volatile than market. Bottom-up beta is more reliable than regression beta.'],
   ['matureERP', 'Mature Market ERP', '%', 'Equity risk premium for a mature market like the US (~5.5% historically per Damodaran).'],
   ['domesticCRP', 'Domestic CRP', '%', 'Country Risk Premium for the company\'s home country. Zero for US/developed markets.'],
@@ -405,72 +416,161 @@ function wacc(i) {
   return we * coe + wd * cod * (1 - t);
 }
 
-// ---------- DCF (FCF to firm, two-stage) ----------
+// ---------- DCF (FCF to firm, two-stage with full projection schedule) ----------
+//
+// Conventions (Damodaran):
+//   - All cash flows and rates are NOMINAL by default (include inflation)
+//   - Internal consistency: nominal flows + nominal discount rate
+//   - "Real" view divides nominal flows by (1+inflation)^t for display only
+//   - Quarterly mode converts annual rates to per-period equivalents
+//
 function dcfValue(i) {
-  const r = wacc(i);
-  const g1 = i.growthRate / 100;
-  const gT = Math.min(i.terminalGrowth / 100, i.riskFreeRate / 100); // cannot exceed Rf
-  const years = Math.round(i.growthYears);
+  const annualR = wacc(i);                                  // nominal WACC, annual
+  const g1 = i.growthRate / 100;                            // nominal year-1 growth
+  const gT = Math.min(i.terminalGrowth / 100, i.riskFreeRate / 100); // cap at Rf
+  const inflation = (i.expectedInflation || 0) / 100;
+  const totalYears = Math.round(i.growthYears);
   const fcf0 = i.fcf;
 
-  if (fcf0 <= 0 || r <= gT) {
-    // Negative FCF or invalid spread — fall back to revenue * margin model
-    return fallbackDcf(i, r, g1, gT, years);
+  const isQuarterly = i.granularity === 'quarterly';
+  const periodsPerYear = isQuarterly ? 4 : 1;
+  const periods = totalYears * periodsPerYear;
+
+  // Convert annual rates to per-period (geometric, not naive division)
+  const r = Math.pow(1 + annualR, 1 / periodsPerYear) - 1;
+  const periodG1 = Math.pow(1 + g1, 1 / periodsPerYear) - 1;
+  const periodGT = Math.pow(1 + gT, 1 / periodsPerYear) - 1;
+  const periodInflation = Math.pow(1 + inflation, 1 / periodsPerYear) - 1;
+
+  if (fcf0 <= 0 || annualR <= gT) {
+    return fallbackDcf(i, annualR, g1, gT, totalYears);
   }
 
-  let pvSum = 0;
+  const schedule = [];
+  let cumulativePV = 0;
   let fcf = fcf0;
-  // Linear fade from g1 to gT over the high-growth period
-  for (let y = 1; y <= years; y++) {
-    const fade = (y - 1) / Math.max(years - 1, 1);
-    const g = g1 + (gT - g1) * fade;
-    fcf = fcf * (1 + g);
-    pvSum += fcf / Math.pow(1 + r, y);
+  // Spread the existing TTM FCF across the periods if we're starting partway in
+  if (isQuarterly) fcf = fcf0 / 4; // start with quarterly FCF base
+
+  for (let t = 1; t <= periods; t++) {
+    // Linear fade from g1 to gT across the high-growth window
+    const fade = (t - 1) / Math.max(periods - 1, 1);
+    const periodGrowth = periodG1 + (periodGT - periodG1) * fade;
+    const annualEquivGrowth = Math.pow(1 + periodGrowth, periodsPerYear) - 1;
+
+    fcf = fcf * (1 + periodGrowth);
+    const discountFactor = Math.pow(1 + r, t);
+    const pv = fcf / discountFactor;
+    cumulativePV += pv;
+
+    // "Real" values deflate nominal by (1+inflation)^t
+    const inflationFactor = Math.pow(1 + periodInflation, t);
+    const realFcf = fcf / inflationFactor;
+    const realPv = pv / inflationFactor;
+
+    schedule.push({
+      period: t,
+      label: isQuarterly ? `Q${((t - 1) % 4) + 1} Y${Math.floor((t - 1) / 4) + 1}` : `Year ${t}`,
+      year: t / periodsPerYear,
+      growthRate: annualEquivGrowth,        // shown as annualized for readability
+      nominalFcf: fcf,
+      realFcf,
+      discountFactor,
+      nominalPv: pv,
+      realPv,
+      cumulativePV,
+    });
   }
-  // Terminal value
-  const tvCashFlow = fcf * (1 + gT);
-  const tv = tvCashFlow / (r - gT);
-  const tvPV = tv / Math.pow(1 + r, years);
-  const enterpriseValue = pvSum + tvPV;
+
+  // Terminal value (nominal, at end of horizon)
+  const finalFcf = schedule[schedule.length - 1].nominalFcf;
+  const tvCashFlow = finalFcf * (1 + periodGT);
+  const tv = tvCashFlow / (r - periodGT);
+  const tvPV = tv / Math.pow(1 + r, periods);
+
+  const enterpriseValue = cumulativePV + tvPV;
   const equityValue = enterpriseValue - i.totalDebt + i.cash;
   const perShare = equityValue / i.sharesOutstanding;
 
   return {
     enterpriseValue, equityValue, perShare,
-    discountRate: r, terminalValue: tv, terminalPV: tvPV,
-    pvOperatingCF: pvSum,
+    discountRate: annualR, terminalValue: tv, terminalPV: tvPV,
+    pvOperatingCF: cumulativePV,
     tvFraction: tvPV / enterpriseValue,
+    schedule,
+    granularity: i.granularity,
+    inflation,
+    realPerShare: perShare / Math.pow(1 + inflation, totalYears),
+    fallback: false,
   };
 }
 
 // Used when FCF isn't positive — derive from revenue & margin assumptions
-function fallbackDcf(i, r, g1, gT, years) {
-  let rev = i.revenue;
+function fallbackDcf(i, annualR, g1, gT, totalYears) {
+  const inflation = (i.expectedInflation || 0) / 100;
+  const isQuarterly = i.granularity === 'quarterly';
+  const periodsPerYear = isQuarterly ? 4 : 1;
+  const periods = totalYears * periodsPerYear;
+
+  const r = Math.pow(1 + annualR, 1 / periodsPerYear) - 1;
+  const periodG1 = Math.pow(1 + g1, 1 / periodsPerYear) - 1;
+  const periodGT = Math.pow(1 + gT, 1 / periodsPerYear) - 1;
+  const periodInflation = Math.pow(1 + inflation, 1 / periodsPerYear) - 1;
+
+  let rev = isQuarterly ? i.revenue / 4 : i.revenue;
   const margin = i.operatingMargin / 100;
-  const t = i.taxRate / 100;
-  let pvSum = 0;
+  const tax = i.taxRate / 100;
+  const ROIC = 0.12; // assumed reinvestment efficiency
+
+  const schedule = [];
+  let cumulativePV = 0;
   let nopat = 0;
-  for (let y = 1; y <= years; y++) {
-    const fade = (y - 1) / Math.max(years - 1, 1);
-    const g = g1 + (gT - g1) * fade;
-    rev = rev * (1 + g);
-    nopat = rev * margin * (1 - t);
-    // Assume reinvestment rate of g/ROIC; rough ROIC of 12%
-    const reinvest = nopat * Math.min(g / 0.12, 0.8);
-    const fcf = nopat - reinvest;
-    pvSum += fcf / Math.pow(1 + r, y);
+
+  for (let t = 1; t <= periods; t++) {
+    const fade = (t - 1) / Math.max(periods - 1, 1);
+    const periodGrowth = periodG1 + (periodGT - periodG1) * fade;
+    const annualEquivGrowth = Math.pow(1 + periodGrowth, periodsPerYear) - 1;
+
+    rev = rev * (1 + periodGrowth);
+    nopat = rev * margin * (1 - tax);
+    // Reinvestment rate scales with growth and ROIC
+    const reinvestRate = Math.min(annualEquivGrowth / ROIC, 0.8);
+    const fcf = nopat * (1 - reinvestRate);
+    const discountFactor = Math.pow(1 + r, t);
+    const pv = fcf / discountFactor;
+    cumulativePV += pv;
+
+    const inflationFactor = Math.pow(1 + periodInflation, t);
+    schedule.push({
+      period: t,
+      label: isQuarterly ? `Q${((t - 1) % 4) + 1} Y${Math.floor((t - 1) / 4) + 1}` : `Year ${t}`,
+      year: t / periodsPerYear,
+      growthRate: annualEquivGrowth,
+      nominalFcf: fcf,
+      realFcf: fcf / inflationFactor,
+      discountFactor,
+      nominalPv: pv,
+      realPv: pv / inflationFactor,
+      cumulativePV,
+    });
   }
-  const finalFcf = nopat * (1 - gT / 0.12);
-  const tv = (finalFcf * (1 + gT)) / (r - gT);
-  const tvPV = tv / Math.pow(1 + r, years);
-  const ev = pvSum + tvPV;
+
+  const finalNopat = nopat;
+  const finalFcf = finalNopat * (1 - gT / ROIC);
+  const tv = (finalFcf * (1 + gT)) / (annualR - gT);
+  const tvPV = tv / Math.pow(1 + annualR, totalYears);
+  const ev = cumulativePV + tvPV;
   const eq = ev - i.totalDebt + i.cash;
   return {
     enterpriseValue: ev, equityValue: eq,
     perShare: eq / i.sharesOutstanding,
-    discountRate: r, terminalValue: tv, terminalPV: tvPV,
-    pvOperatingCF: pvSum,
+    discountRate: annualR, terminalValue: tv, terminalPV: tvPV,
+    pvOperatingCF: cumulativePV,
     tvFraction: tvPV / ev,
+    schedule,
+    granularity: i.granularity,
+    inflation,
+    realPerShare: (eq / i.sharesOutstanding) / Math.pow(1 + inflation, totalYears),
     fallback: true,
   };
 }
@@ -510,6 +610,8 @@ function capmJustified(i) {
 function monteCarlo(i, n = 10000) {
   const results = [];
   const inputs = { ...i };
+  // Force annual granularity for MC speed — quarterly would 4x the work for no gain
+  inputs.granularity = 'annual';
 
   for (let k = 0; k < n; k++) {
     inputs.growthRate = i.growthRate + boxMuller() * i.growthVol;
@@ -563,6 +665,7 @@ function recalculate() {
   }, 200);
 
   renderResults();
+  renderProjection();
 }
 
 // ============================================================
@@ -703,6 +806,83 @@ function deltaTag(estimate, price) {
   const cls = d > 0 ? 'pos' : 'neg';
   const color = d > 0 ? 'var(--green)' : 'var(--red)';
   return `<span style="color:${color}">${(d>=0?'+':'') + (d * 100).toFixed(1)}% vs market</span>`;
+}
+
+// ---------- PROJECTION TABLE ----------
+function renderProjection() {
+  const wrap = document.getElementById('projection-table-wrap');
+  if (!wrap) return;
+  const dcf = state.results.dcf;
+  if (!dcf?.schedule) {
+    wrap.innerHTML = '<div class="empty">DCF unavailable — check inputs</div>';
+    return;
+  }
+
+  const real = state.inputs.displayMode === 'real';
+  const fcfKey = real ? 'realFcf' : 'nominalFcf';
+  const pvKey = real ? 'realPv' : 'nominalPv';
+  const granLabel = state.inputs.granularity === 'quarterly' ? 'Quarter' : 'Year';
+
+  // Find max FCF magnitude for the inline bar visualization
+  const maxFcf = Math.max(...dcf.schedule.map(p => Math.abs(p[fcfKey])));
+
+  const rows = dcf.schedule.map(p => {
+    const barWidth = maxFcf > 0 ? (Math.abs(p[fcfKey]) / maxFcf * 60) : 0;
+    return `
+      <tr>
+        <td>${p.label}</td>
+        <td>${(p.growthRate * 100).toFixed(2)}%</td>
+        <td class="proj-bar-cell">
+          ${fmt$(p[fcfKey])}
+          <span class="proj-bar" style="width:${barWidth}px"></span>
+        </td>
+        <td>${p.discountFactor.toFixed(3)}</td>
+        <td>${fmt$(p[pvKey])}</td>
+        <td>${fmt$(p.cumulativePV)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Terminal value handling for the display mode
+  const displayTV = real
+    ? dcf.terminalPV / Math.pow(1 + dcf.inflation, state.inputs.growthYears)
+    : dcf.terminalPV;
+
+  wrap.innerHTML = `
+    <div class="proj-table-wrap">
+      <table class="proj-table">
+        <thead>
+          <tr>
+            <th>${granLabel}</th>
+            <th>Growth (annualized)</th>
+            <th>FCF ${real ? '(real)' : '(nominal)'}</th>
+            <th>Discount factor</th>
+            <th>PV ${real ? '(real)' : '(nominal)'}</th>
+            <th>Cumulative PV</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr>
+            <td>Terminal Value (PV)</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>${fmt$(displayTV)}</td>
+            <td>${fmt$(dcf.pvOperatingCF + dcf.terminalPV)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="proj-summary">
+      <div><div class="l">Discount Rate (WACC)</div><div class="v">${fmtPct(dcf.discountRate)}</div></div>
+      <div><div class="l">Inflation Assumption</div><div class="v">${fmtPct(dcf.inflation)}</div></div>
+      <div><div class="l">Real Discount Rate</div><div class="v">${fmtPct((1 + dcf.discountRate) / (1 + dcf.inflation) - 1)}</div></div>
+      <div><div class="l">Periods Modeled</div><div class="v">${dcf.schedule.length}</div></div>
+      <div><div class="l">Terminal Value Share</div><div class="v">${fmtPct(dcf.tvFraction)}</div></div>
+      <div><div class="l">Per-Share (${real ? 'real' : 'nominal'})</div><div class="v">${fmt$(real ? dcf.realPerShare : dcf.perShare)}</div></div>
+    </div>
+  `;
 }
 
 // ---------- MONTE CARLO HISTOGRAM ----------
@@ -1015,6 +1195,29 @@ if (!getApiKey()) {
   kb.style.borderColor = 'var(--amber)';
   kb.style.color = 'var(--amber)';
 }
+
+// Segmented controls: granularity and display mode
+function wireSegControl(id, key) {
+  const ctrl = document.getElementById(id);
+  if (!ctrl) return;
+  ctrl.addEventListener('click', e => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn) return;
+    const val = btn.dataset.val;
+    state.inputs[key] = val;
+    ctrl.querySelectorAll('.seg-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.val === val);
+    });
+    // Granularity changes the math; display mode is just a view flip
+    if (key === 'granularity') {
+      recalculate();
+    } else {
+      renderProjection();
+    }
+  });
+}
+wireSegControl('seg-granularity', 'granularity');
+wireSegControl('seg-display', 'displayMode');
 
 // Initial render of saved list
 renderSaved();
